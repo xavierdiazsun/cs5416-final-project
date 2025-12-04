@@ -6,7 +6,11 @@ import numpy as np
 import torch
 import faiss
 import sqlite3
-from typing import List, Dict, Any
+import pickle
+import requests
+import werkzeug
+from abc import ABC, abstractmethod
+from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from transformers import (
     AutoTokenizer,
@@ -24,11 +28,18 @@ import threading
 # Read environment variables
 TOTAL_NODES = int(os.environ.get('TOTAL_NODES', 1))
 NODE_NUMBER = int(os.environ.get('NODE_NUMBER', 0))
-NODE_0_IP = os.environ.get('NODE_0_IP', 'localhost:8000')
-NODE_1_IP = os.environ.get('NODE_1_IP', 'localhost:8000')
-NODE_2_IP = os.environ.get('NODE_2_IP', 'localhost:8000')
+NODE_0_IP_PORT = os.environ.get('NODE_0_IP', 'localhost:8000')
+NODE_1_IP_PORT = os.environ.get('NODE_1_IP', 'localhost:8000')
+NODE_2_IP_PORT = os.environ.get('NODE_2_IP', 'localhost:8000')
 FAISS_INDEX_PATH = os.environ.get('FAISS_INDEX_PATH', 'faiss_index.bin')
 DOCUMENTS_DIR = os.environ.get('DOCUMENTS_DIR', 'documents/')
+
+NODE_0_IP = NODE_0_IP_PORT.split(':')[0]
+NODE_0_PORT = int(NODE_0_IP_PORT.split(':')[1]) if ':' in NODE_0_IP_PORT else 8000
+NODE_1_IP = NODE_1_IP_PORT.split(':')[0]
+NODE_1_PORT = int(NODE_1_IP_PORT.split(':')[1]) if ':' in NODE_1_IP_PORT else 8000
+NODE_2_IP = NODE_2_IP_PORT.split(':')[0]
+NODE_2_PORT = int(NODE_2_IP_PORT.split(':')[1]) if ':' in NODE_2_IP_PORT else 8000
 
 # Configuration
 CONFIG = {
@@ -50,6 +61,7 @@ results_lock = threading.Lock()
 
 @dataclass
 class PipelineRequest:
+    request_ids: Optional[List[str]]
     request_id: str
     query: str
     timestamp: float
@@ -60,14 +72,8 @@ class PipelineResponse:
     generated_response: str
     sentiment: str
     is_toxic: str
-    processing_time: float
 
-class MonolithicPipeline:
-
-    """
-    Deliberately inefficient monolithic pipeline
-    """
-    
+class BasePipeline(ABC):
     def __init__(self):
         self.device = torch.device('cpu')
         print(f"Initializing pipeline on {self.device}")
@@ -81,81 +87,20 @@ class MonolithicPipeline:
         self.llm_model_name = 'Qwen/Qwen2.5-0.5B-Instruct'
         self.sentiment_model_name = 'nlptown/bert-base-multilingual-uncased-sentiment'
         self.safety_model_name = 'unitary/toxic-bert'
-    
-    def process_request(self, request: PipelineRequest) -> PipelineResponse:
-        """
-        Backwards-compatible single-request entry point that delegates
-        to the batch processor with a batch size of 1.
-        """
-        responses = self.process_batch([request])
-        return responses[0]
 
-    def process_batch(self, requests: List[PipelineRequest]) -> List[PipelineResponse]:
+        self.session = requests.Session()
+
+    @abstractmethod
+    def process_request(self, req: PipelineRequest) -> PipelineResponse:
+        pass
+
+    @abstractmethod
+    def process_batch(self, reqs: List[PipelineRequest]) -> List[PipelineResponse]:
         """
         Main pipeline execution for a batch of requests.
         """
-        if not requests:
-            return []
+        pass
 
-        batch_size = len(requests)
-        start_times = [time.time() for _ in requests]
-        queries = [req.query for req in requests]
-
-        print("\n" + "="*60)
-        print(f"Processing batch of {batch_size} requests")
-        print("="*60)
-        for request in requests:
-            print(f"- {request.request_id}: {request.query[:50]}...")
-        
-        # Step 1: Generate embeddings
-        print("\n[Step 1/7] Generating embeddings for batch...")
-        query_embeddings = self._generate_embeddings_batch(queries)
-
-        # Step 2: FAISS ANN search
-        print("\n[Step 2/7] Performing FAISS ANN search for batch...")
-        doc_id_batches = self._faiss_search_batch(query_embeddings)
-
-        # Step 3: Fetch documents from disk
-        print("\n[Step 3/7] Fetching documents for batch...")
-        documents_batch = self._fetch_documents_batch(doc_id_batches)
-
-        # Step 4: Rerank documents
-        print("\n[Step 4/7] Reranking documents for batch...")
-        reranked_docs_batch = self._rerank_documents_batch(
-            queries,
-            documents_batch
-        )
-
-        # Step 5: Generate LLM responses
-        print("\n[Step 5/7] Generating LLM responses for batch...")
-        responses_text = self._generate_responses_batch(
-            queries,
-            reranked_docs_batch
-        )
-
-        # Step 6: Sentiment analysis
-        print("\n[Step 6/7] Analyzing sentiment for batch...")
-        sentiments = self._analyze_sentiment_batch(responses_text)
-
-        # Step 7: Safety filter on responses
-        print("\n[Step 7/7] Applying safety filter to batch...")
-        toxicity_flags = self._filter_response_safety_batch(responses_text)
-        
-        responses = []
-        for idx, request in enumerate(requests):
-            processing_time = time.time() - start_times[idx]
-            print(f"\n✓ Request {request.request_id} processed in {processing_time:.2f} seconds")
-            sensitivity_result = "true" if toxicity_flags[idx] else "false"
-            responses.append(PipelineResponse(
-                request_id=request.request_id,
-                generated_response=responses_text[idx],
-                sentiment=sentiments[idx],
-                is_toxic=sensitivity_result,
-                processing_time=processing_time
-            ))
-        
-        return responses
-    
     def _generate_embeddings_batch(self, texts: List[str]) -> np.ndarray:
         """Step 2: Generate embeddings for a batch of queries"""
         model = SentenceTransformer(self.embedding_model_name).to(self.device)
@@ -310,6 +255,106 @@ class MonolithicPipeline:
         return toxicity_flags
 
 
+class Node0Pipeline(BasePipeline):
+    def process_request(self, request: PipelineRequest) -> PipelineResponse:
+        """
+        Backwards-compatible single-request entry point that delegates
+        to the batch processor with a batch size of 1.
+        """
+        self.process_batch([request])
+
+    def process_batch(self, reqs: List[PipelineRequest]) -> List[PipelineResponse]:
+        if not reqs:
+            return []
+
+        batch_size = len(reqs)
+        queries = [req.query for req in reqs]
+
+        print("\n" + "="*60)
+        print(f"Processing batch of {batch_size} requests")
+        print("="*60)
+        for req in reqs:
+            print(f"- {req.request_id}: {req.query[:50]}...")
+        
+        # Step 1: Generate embeddings
+        print("\n[Step 1/7] Generating embeddings for batch...")
+        query_embeddings = self._generate_embeddings_batch(queries)
+        data = pickle.dumps({
+            "request_ids": [req.request_id for req in reqs],
+            "query": {
+                "query_embeddings": query_embeddings,
+                "queries": queries,
+            },
+        })
+        self.session.post(f"http://{NODE_1_IP_PORT}/query", data=data)
+
+class Node1Pipeline(BasePipeline):
+    def process_request(self, req: PipelineRequest) -> PipelineResponse:
+        query_ids = req.request_ids
+        queries = req.query["queries"]
+        query_embeddings = req.query["query_embeddings"]
+
+        # Step 2: FAISS ANN search
+        print("\n[Step 2/7] Performing FAISS ANN search for batch...")
+        doc_id_batches = self._faiss_search_batch(query_embeddings)
+
+        # Step 3: Fetch documents from disk
+        print("\n[Step 3/7] Fetching documents for batch...")
+        documents_batch = self._fetch_documents_batch(doc_id_batches)
+
+        # Step 4: Rerank documents
+        print("\n[Step 4/7] Reranking documents for batch...")
+        reranked_docs_batch = self._rerank_documents_batch(
+            queries,
+            documents_batch
+        )
+
+        data = pickle.dumps({
+            "request_ids": query_ids,
+            "query": {
+                "queries": queries,
+                "reranked_docs_batch": reranked_docs_batch
+            },
+        })
+        self.session.post(f"http://{NODE_2_IP_PORT}/query", data=data)
+
+    def process_batch(self, reqs):
+        pass
+
+
+class Node2Pipeline(BasePipeline):
+    def process_request(self, req: PipelineRequest) -> PipelineResponse:
+        query_ids = req.request_ids
+        queries = req.query["queries"]
+        reranked_docs_batch = req.query["reranked_docs_batch"]
+
+        # Step 5: Generate LLM responses
+        print("\n[Step 5/7] Generating LLM responses for batch...")
+        responses_text = self._generate_responses_batch(
+            queries,
+            reranked_docs_batch
+        )
+
+        # Step 6: Sentiment analysis
+        print("\n[Step 6/7] Analyzing sentiment for batch...")
+        sentiments = self._analyze_sentiment_batch(responses_text)
+
+        # Step 7: Safety filter on responses
+        print("\n[Step 7/7] Applying safety filter to batch...")
+        toxicity_flags = self._filter_response_safety_batch(responses_text)
+
+        data = {
+            "request_ids": query_ids,
+            "responses_text": responses_text,
+            "sentiments": sentiments,
+            "toxicity_flags": toxicity_flags,
+        }
+
+        self.session.post(f"http://{NODE_0_IP_PORT}/return", json=data)
+
+    def process_batch(self, reqs):
+        pass
+
 # Global pipeline instance
 pipeline = None
 
@@ -324,22 +369,14 @@ def process_requests_worker():
             
             # Create request object
             req = PipelineRequest(
+                request_ids=request_data.get('request_ids'),
                 request_id=request_data['request_id'],
                 query=request_data['query'],
                 timestamp=time.time()
             )
             
             # Process request
-            response = pipeline.process_request(req)
-            
-            # Store result
-            with results_lock:
-                results[request_data['request_id']] = {
-                    'request_id': response.request_id,
-                    'generated_response': response.generated_response,
-                    'sentiment': response.sentiment,
-                    'is_toxic': response.is_toxic
-                }
+            pipeline.process_request(req)
             
             request_queue.task_done()
         except Exception as e:
@@ -351,11 +388,19 @@ def process_requests_worker():
 def handle_query():
     """Handle incoming query requests"""
     try:
-        data = request.json
+        try:
+            data = request.json
+        except werkzeug.exceptions.UnsupportedMediaType:
+            data = pickle.loads(request.data)
         request_id = data.get('request_id')
+        # Only used for node 0 to node 1 and node 1 to node 2 communication
+        request_ids = data.get('request_ids')
+        # Use the first request_id if multiple are provided as an identifier for results cache
+        if request_ids is not None:
+            request_id = request_ids[0]
         query = data.get('query')
         
-        if not request_id or not query:
+        if request_id is None or query is None:
             return jsonify({'error': 'Missing request_id or query'}), 400
         
         # Check if result already exists (request already processed)
@@ -366,9 +411,13 @@ def handle_query():
         print(f"queueing request {request_id}")
         # Add to queue
         request_queue.put({
+            'request_ids': request_ids,
             'request_id': request_id,
             'query': query
         })
+        
+        if NODE_NUMBER != 0:
+            return '', 204
 
         # Wait for processing (with timeout). Very inefficient - would suggest using a more efficient waiting and timeout mechanism.
         timeout = 300  # 5 minutes
@@ -388,6 +437,38 @@ def handle_query():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/return', methods=['POST'])
+def handle_return():
+    """Only used for node 0 to receive results from node 2"""
+    try:
+        data = request.json
+        request_ids = data['request_ids']
+        responses_text = data['responses_text']
+        sentiments = data['sentiments']
+        toxicity_flags = data['toxicity_flags']
+
+        responses = []
+        for idx, request_id in enumerate(request_ids):
+            sensitivity_result = "true" if toxicity_flags[idx] else "false"
+            responses.append(PipelineResponse(
+                request_id=request_id,
+                generated_response=responses_text[idx],
+                sentiment=sentiments[idx],
+                is_toxic=sensitivity_result,
+            ))
+
+            with results_lock:
+                results[request_id] = {
+                    'request_id': request_id,
+                    'generated_response': responses_text[idx],
+                    'sentiment': sentiments[idx],
+                    'is_toxic': sensitivity_result
+                }
+
+        return '', 204
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/health', methods=['GET'])
 def health():
     """Health check endpoint"""
@@ -405,27 +486,34 @@ def main():
     global pipeline
     
     print("="*60)
-    print("MONOLITHIC CUSTOMER SUPPORT PIPELINE")
+    print("CUSTOMER SUPPORT PIPELINE")
     print("="*60)
     print(f"\nRunning on Node {NODE_NUMBER} of {TOTAL_NODES} nodes")
-    print(f"Node IPs: 0={NODE_0_IP}, 1={NODE_1_IP}, 2={NODE_2_IP}")
-    print("\nNOTE: This implementation is deliberately inefficient.")
-    print("Your task is to optimize this for a 3-node cluster.\n")
+    print(f"Node IPs: 0={NODE_0_IP_PORT}, 1={NODE_1_IP_PORT}, 2={NODE_2_IP_PORT}")
     
     # Initialize pipeline
     print("Initializing pipeline...")
-    pipeline = MonolithicPipeline()
+    if NODE_NUMBER == 0:
+        pipeline = Node0Pipeline()
+    elif NODE_NUMBER == 1:
+        pipeline = Node1Pipeline()
+    else:
+        pipeline = Node2Pipeline()
     print("Pipeline initialized!")
     
     # Start worker thread
     worker_thread = threading.Thread(target=process_requests_worker, daemon=True)
     worker_thread.start()
-    print("Worker thread started!")
+    print("Worker threads started!")
     
     # Start Flask server
     print(f"\nStarting Flask server")
-    hostname = NODE_0_IP.split(':')[0]
-    port = int(NODE_0_IP.split(':')[1]) if ':' in NODE_0_IP else 8000
+    hostname = "0.0.0.0"
+    port = NODE_0_PORT
+    if NODE_NUMBER == 1:
+        port = NODE_1_PORT
+    elif NODE_NUMBER == 2:
+        port = NODE_2_PORT
     app.run(host=hostname, port=port, threaded=True)
 
 
