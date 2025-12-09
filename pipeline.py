@@ -24,6 +24,7 @@ from sentence_transformers import SentenceTransformer
 from flask import Flask, request, jsonify
 from queue import Queue, Empty
 import threading
+import resource
 
 # Read environment variables
 TOTAL_NODES = int(os.environ.get('TOTAL_NODES', 1))
@@ -60,6 +61,52 @@ request_queue = Queue()
 results = {}
 results_lock = threading.Lock()
 pending_events = {} 
+
+profiling_lock = threading.Lock()
+profiling_data = {
+    "start_time": time.time(),
+    "total_completed": 0,
+}
+
+def get_process_memory() -> Optional[float]:
+    """Get current process memory usage in MB"""
+    try:
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        return usage.ru_maxrss / 1024.0  # Convert to MB
+    except:
+        return None
+    
+def get_gpu_memory() -> Optional[float]:
+    """Get current GPU memory usage in MB"""
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            mem_info = torch.cuda.memory_allocated() / (1024.0 * 1024.0)  # Convert to MB
+            return mem_info
+        else:
+            return None
+    except:
+        return None
+
+def get_throughput_stats() -> Dict[str, Any]:
+    """Get throughput statistics"""
+    now = time.time()
+    with profiling_lock:
+        total_completed = profiling_data["total_completed"]
+        elapsed = max(now - profiling_data["start_time"], 1e-6)
+
+    throughput = total_completed / elapsed
+    mem_mb = get_process_memory()
+    gpu_mb = get_gpu_memory()
+
+    return {
+        "total_completed": total_completed,
+        "elapsed_seconds": elapsed,
+        "throughput_rps": throughput,
+        "memory_mb": mem_mb,
+        "gpu_memory_mb": gpu_mb,
+    }
+
 
 @dataclass
 class PipelineRequest:
@@ -446,6 +493,22 @@ def handle_return():
                 }
                 if request_id in pending_events:
                     pending_events[request_id].set()
+
+        # profiling
+        num_completed = len(request_ids)
+        with profiling_lock:
+            profiling_data["total_completed"] += num_completed
+
+        stats = get_throughput_stats()
+        mem_str = f"{stats['memory_mb']:.2f} MB" if stats["memory_mb"] is not None else "N/A"
+        gpu_str = f"{stats['gpu_memory_mb']:.2f} MB" if stats["gpu_memory_mb"] is not None else "N/A"
+
+        print(
+            f"[PROFILE] Completed={stats['total_completed']} |"
+            f" Elapsed={stats['elapsed_seconds']:.2f}s |"
+            f" Throughput={stats['throughput_rps']:.2f} req/s |"
+            f" Mem={mem_str} GPU={gpu_str}"
+        )
 
         return '', 204
     except Exception as e:
