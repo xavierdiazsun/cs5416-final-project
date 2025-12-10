@@ -52,7 +52,10 @@ CONFIG = {
     'max_tokens': 128, 
     'retrieval_k': 10, 
     'truncate_length': 512,
-    'batch_size': 8
+    'default_batch_size': 8,
+    'batch_size_node0': 4,
+    'batch_size_node1': 32,
+    'batch_size_node2': 8
 }
 
 # Compression toggle for inter-node communication
@@ -570,11 +573,18 @@ def process_requests_worker():
             first_item = request_queue.get(timeout=1.0) 
             batch = [first_item]
 
+            if NODE_NUMBER == 0:
+                local_batch_size = CONFIG['batch_size_node0']
+            elif NODE_NUMBER == 1:
+                local_batch_size = CONFIG['batch_size_node1']
+            else:
+                local_batch_size = CONFIG['batch_size_node2']
+                
             MAX_BATCH_WAIT = float(os.environ.get("MAX_BATCH_WAIT", "0.1"))
             
             # 2. Opportunistic wait for more
             start_wait = time.time()
-            while len(batch) < CONFIG['batch_size']:
+            while len(batch) < local_batch_size:
                 if time.time() - start_wait > MAX_BATCH_WAIT: break # Wait max 100ms
                 try:
                     item = request_queue.get_nowait()
