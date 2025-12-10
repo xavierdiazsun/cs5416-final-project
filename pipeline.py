@@ -55,9 +55,9 @@ CONFIG = {
     'retrieval_k': 10, 
     'truncate_length': 512,
     'default_batch_size': 8,
-    'batch_size_node0': 4,
-    'batch_size_node1': 32,
-    'batch_size_node2': 8
+    'batch_size_node0': 16,
+    'batch_size_node1': 16,
+    'batch_size_node2': 16
 }
 
 # Compression toggle for inter-node communication
@@ -76,6 +76,7 @@ profiling_lock = threading.Lock()
 profiling_data = {
     "start_time": time.time(),
     "total_completed": 0,
+    "local_completed": 0
 }
 
 # per-stage profiling (times in seconds)
@@ -115,18 +116,23 @@ def get_throughput_stats() -> Dict[str, Any]:
     """Get throughput statistics"""
     now = time.time()
     with profiling_lock:
-        total_completed = profiling_data["total_completed"]
         elapsed = max(now - profiling_data["start_time"], 1e-6)
+
+        total_completed = profiling_data["total_completed"]
+        local_completed = profiling_data["local_completed"]
         stage_stats = dict(stage_profiling)
 
-    throughput = total_completed / elapsed
+    total_throughput = total_completed / elapsed
+    local_throughput = local_completed / elapsed
+    
     mem_mb = get_process_memory()
     gpu_mb = get_gpu_memory()
 
     return {
         "total_completed": total_completed,
         "elapsed_seconds": elapsed,
-        "throughput_rps": throughput,
+        "total_throughput_rps": total_throughput,
+        "local_throughput_rps": local_throughput,
         "memory_mb": mem_mb,
         "gpu_memory_mb": gpu_mb,
         "stage_profiling": stage_stats,
@@ -167,7 +173,7 @@ def append_profiling_row(local_batch_size: int) -> None:
         if not file_exists:
             f.write(
                 "node,batch_size,total_completed,elapsed_seconds,"
-                "throughput_rps,memory_mb,gpu_memory_mb,"
+                "local_throughput_rps,total_throughput_rps,memory_mb,gpu_memory_mb,"
                 "embed,ann,docfetch,rerank,generate,sentiment,safety\n"
             )
 
@@ -176,7 +182,8 @@ def append_profiling_row(local_batch_size: int) -> None:
             f"{local_batch_size},"
             f"{stats['total_completed']},"
             f"{stats['elapsed_seconds']},"
-            f"{stats['throughput_rps']},"
+            f"{stats['local_throughput_rps']},"
+            f"{stats['total_throughput_rps']},"
             f"{stats['memory_mb']},"
             f"{stats['gpu_memory_mb']},"
             f"{stage_stats['embed']},"
@@ -461,8 +468,11 @@ class Node0Pipeline(BasePipeline):
             self.session.post(f"http://{NODE_1_IP_PORT}/query", data=data, headers=headers, timeout=1.0)
         except: pass # Async fire and forget
 
+        with profiling_lock:
+            profiling_data["local_completed"] += batch_size
+
         log_stage_profile("Node 0")
-        append_profiling_row(batch_size)
+        append_profiling_row(CONFIG['batch_size_node0'])
 
 
 class Node1Pipeline(BasePipeline):
@@ -536,8 +546,11 @@ class Node1Pipeline(BasePipeline):
             self.session.post(f"http://{NODE_2_IP_PORT}/query", data=data, headers=headers, timeout=1.0)
         except: pass
 
+        with profiling_lock:
+            profiling_data["local_completed"] += batch_size
+
         log_stage_profile("Node 1")
-        append_profiling_row(batch_size)
+        append_profiling_row(CONFIG['batch_size_node1'])
 
 
     def process_batch(self, reqs): pass
@@ -597,8 +610,11 @@ class Node2Pipeline(BasePipeline):
             self.session.post(f"http://{NODE_0_IP_PORT}/return", json=data, timeout=5.0)
         except: pass
 
+        with profiling_lock:
+            profiling_data["local_completed"] += batch_size
+
         log_stage_profile("Node 2")
-        append_profiling_row(batch_size)
+        append_profiling_row(CONFIG['batch_size_node2'])
 
 
     def process_batch(self, reqs): pass
