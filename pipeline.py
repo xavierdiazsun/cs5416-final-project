@@ -55,9 +55,9 @@ CONFIG = {
     'retrieval_k': 10, 
     'truncate_length': 512,
     'default_batch_size': 8,
-    'batch_size_node0': 16,
-    'batch_size_node1': 16,
-    'batch_size_node2': 16
+    'batch_size_node0': 4,
+    'batch_size_node1': 8,
+    'batch_size_node2': 4
 }
 
 # Compression toggle for inter-node communication

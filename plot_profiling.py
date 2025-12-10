@@ -52,7 +52,6 @@ def plot_local_throughput(dfs):
 def plot_peak_memory(dfs):
     """
     Show peak memory used by each node (single bar per node).
-    This directly satisfies: "Show the peak memory used by your processes per node".
     """
     nodes = []
     peaks = []
@@ -76,7 +75,6 @@ def plot_peak_memory(dfs):
 
 def plot_stage_breakdown_cumulative(dfs):
     for node, df in dfs.items():
-        # Pick stages based on node id
         if node == 0:
             node_stages = ["embed"]
         elif node == 1:
@@ -107,7 +105,6 @@ def plot_stage_breakdown_cumulative(dfs):
 
 def plot_stage_time_per_batch(dfs):
     for node, df in dfs.items():
-        # Pick stages based on node id
         if node == 0:
             node_stages = ["embed"]
         elif node == 1:
@@ -198,17 +195,12 @@ def plot_memory_vs_throughput_by_batch(dfs):
     """
     Show tradeoffs between throughput and memory usage across different choices
     of batch size, per node.
-
-    This becomes more interesting once you run multiple experiments with
-    different CONFIG['batch_size_*'] and produce multiple rows with different
-    batch_size values.
     """
     for node, df in dfs.items():
         if "batch_size" not in df.columns:
             print(f"[WARN] Node {node} has no batch_size column, skipping memory-vs-throughput plot.")
             continue
 
-        # Aggregate by batch_size: peak memory, max local throughput
         grouped = df.groupby("batch_size").agg({
             "memory_mb": "max",
             "local_throughput_rps": "max"
@@ -232,10 +224,6 @@ def plot_memory_vs_throughput_by_batch(dfs):
         print(f"[OUT] Saved {fname}")
 
 def plot_max_throughput_summary(dfs):
-    """
-    Measure maximum throughput in requests/minute that your system can handle,
-    per node, based on observed local_throughput_rps.
-    """
     nodes = []
     max_rpm = []
     for node, df in dfs.items():
@@ -269,22 +257,17 @@ def main():
         print("No profiling_node*.csv files found. Run the server/client first.")
         return
 
-    # Throughput vs time
     plot_local_throughput(dfs)
 
-    # Peak memory per node (instead of memory over time)
     plot_peak_memory(dfs)
 
-    # Stage timing breakdowns
     plot_stage_breakdown_cumulative(dfs)
     plot_stage_time_per_batch(dfs)
     plot_stage_breakdown_cumulative_combined(dfs)
     plot_stage_time_per_batch_combined(dfs)
 
-    # Memory vs throughput tradeoffs by batch size
     plot_memory_vs_throughput_by_batch(dfs)
 
-    # Max throughput summary in req/min
     plot_max_throughput_summary(dfs)
 
 if __name__ == "__main__":

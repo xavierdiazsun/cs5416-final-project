@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
-High-load client for measuring max throughput of the ML pipeline.
-
 Spawns multiple worker threads. Each worker sends requests in a tight loop
-until TEST_DURATION seconds have elapsed. At the end, we compute
+until TEST_DURATION seconds have elapsed. At the end, compute
 total successful requests and convert to requests/minute.
 """
 
@@ -17,7 +15,7 @@ from typing import Dict, List
 NODE_0_IP = os.environ.get("NODE_0_IP", "localhost:8000")
 SERVER_URL = f"http://{NODE_0_IP}/query"
 
-NUM_WORKERS = 1
+NUM_WORKERS = 4
 TEST_DURATION = 120
 
 TEST_QUERIES = [
@@ -34,7 +32,7 @@ TEST_QUERIES = [
 results_lock = threading.Lock()
 success_count = 0
 failure_count = 0
-latencies: List[float] = []  # optional: end-to-end latency under high load
+latencies: List[float] = []
 
 
 def worker_thread(worker_id: int, stop_time: float):
@@ -67,13 +65,12 @@ def worker_thread(worker_id: int, stop_time: float):
 
 def main():
     print("=" * 70)
-    print("HIGH-LOAD THROUGHPUT TEST CLIENT")
+    print("THROUGHPUT TEST CLIENT")
     print("=" * 70)
     print(f"Server URL: {SERVER_URL}")
     print(f"Workers: {NUM_WORKERS}, Duration: {TEST_DURATION}s")
     print("=" * 70)
 
-    # Optional: health check
     try:
         health = requests.get(f"http://{NODE_0_IP}/health", timeout=5)
         print("Health:", health.status_code, health.text)
@@ -111,13 +108,12 @@ def main():
     print(f"Failed: {total_fail}")
     print(f"Max observed throughput: {rpm:.1f} successful requests/min")
 
-    # Optional: latency stats under high load
     if latencies:
         import statistics
         avg = statistics.mean(latencies)
         med = statistics.median(latencies)
         p95 = sorted(latencies)[int(0.95 * len(latencies)) - 1]
-        print("\nLatency under high load:")
+        print("\nLatency under load:")
         print(f"  Avg: {avg:.2f}s, Median: {med:.2f}s, p95: {p95:.2f}s")
 
 
