@@ -19,7 +19,6 @@ def load_node_csv(node: int):
     return df
 
 def add_stage_deltas(df: pd.DataFrame) -> pd.DataFrame:
-    """ Compute per-batch deltas for cumulative stage columns. """
     for stage in STAGES:
         delta_col = stage + "_delta"
         if stage in df.columns:
@@ -27,7 +26,6 @@ def add_stage_deltas(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def plot_local_throughput(dfs):
-    """ Plot local throughput over time for each node. """
     plt.figure()
     for node, df in dfs.items():
         if "local_throughput_rps" in df.columns:
@@ -50,9 +48,6 @@ def plot_local_throughput(dfs):
     print(f"[OUT] Saved {fname}")
 
 def plot_peak_memory(dfs):
-    """
-    Show peak memory used by each node (single bar per node).
-    """
     nodes = []
     peaks = []
     for node, df in dfs.items():
@@ -192,10 +187,6 @@ def plot_stage_time_per_batch_combined(dfs):
     print(f"[OUT] Saved {fname}")
 
 def plot_memory_vs_throughput_by_batch(dfs):
-    """
-    Show tradeoffs between throughput and memory usage across different choices
-    of batch size, per node.
-    """
     for node, df in dfs.items():
         if "batch_size" not in df.columns:
             print(f"[WARN] Node {node} has no batch_size column, skipping memory-vs-throughput plot.")

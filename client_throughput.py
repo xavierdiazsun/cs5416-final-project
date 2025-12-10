@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""
-Spawns multiple worker threads. Each worker sends requests in a tight loop
-until TEST_DURATION seconds have elapsed. At the end, compute
-total successful requests and convert to requests/minute.
-"""
-
 import os
 import time
 import threading
@@ -91,7 +85,6 @@ def main():
 
     total_time = time.time() - start_time
 
-    # Compute throughput (req/min)
     with results_lock:
         total_success = success_count
         total_fail = failure_count
