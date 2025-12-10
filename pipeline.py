@@ -296,10 +296,11 @@ class BasePipeline(ABC):
     
     def _rerank_documents_batch(self, queries: List[str], documents_batch: List[List[Dict]]) -> List[List[Dict]]:
         """Step 5: Rerank retrieved documents for each query in the batch"""
-        tokenizer = AutoTokenizer.from_pretrained(self.reranker_model_name)
-        model = AutoModelForSequenceClassification.from_pretrained(self.reranker_model_name).to(self.device)
-        model.eval()
-        reranked_batches = []
+        #tokenizer = AutoTokenizer.from_pretrained(self.reranker_model_name)
+        #model = AutoModelForSequenceClassification.from_pretrained(self.reranker_model_name).to(self.device)
+        #model.eval()
+        reranked_batches: List[List[Dict]] = []
+
         for query, documents in zip(queries, documents_batch):
             if not documents:
                 reranked_batches.append([])
@@ -574,7 +575,7 @@ def process_requests_worker():
             # 2. Opportunistic wait for more
             start_wait = time.time()
             while len(batch) < CONFIG['batch_size']:
-                if time.time() - start_wait > MAX: break # Wait max 100ms
+                if time.time() - start_wait > MAX_BATCH_WAIT: break # Wait max 100ms
                 try:
                     item = request_queue.get_nowait()
                     batch.append(item)
