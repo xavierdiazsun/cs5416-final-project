@@ -554,7 +554,7 @@ class Node2Pipeline(BasePipeline):
             self.session.post(f"http://{NODE_0_IP_PORT}/return", json=data, timeout=5.0)
         except: pass
 
-        log_stage_profile("Node1")
+        log_stage_profile("Node2")
 
     def process_batch(self, reqs): pass
 
@@ -568,11 +568,13 @@ def process_requests_worker():
             # 1. Block for first item
             first_item = request_queue.get(timeout=1.0) 
             batch = [first_item]
+
+            MAX_BATCH_WAIT = float(os.environ.get("MAX_BATCH_WAIT", "0.1"))
             
             # 2. Opportunistic wait for more
             start_wait = time.time()
             while len(batch) < CONFIG['batch_size']:
-                if time.time() - start_wait > 10: break # Wait max 100ms
+                if time.time() - start_wait > MAX: break # Wait max 100ms
                 try:
                     item = request_queue.get_nowait()
                     batch.append(item)
