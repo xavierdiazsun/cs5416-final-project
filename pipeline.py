@@ -44,6 +44,8 @@ NODE_1_PORT = int(NODE_1_IP_PORT.split(':')[1]) if ':' in NODE_1_IP_PORT else 80
 NODE_2_IP = NODE_2_IP_PORT.split(':')[0]
 NODE_2_PORT = int(NODE_2_IP_PORT.split(':')[1]) if ':' in NODE_2_IP_PORT else 8000
 
+PROFILING_CSV = f"profiling_node{NODE_NUMBER}.csv"
+
 # Configuration
 CONFIG = {
     'faiss_index_path': FAISS_INDEX_PATH,
@@ -152,6 +154,39 @@ def log_stage_profile(node_label: str):
         f"sentiment={ms(s['sentiment']):.1f}ms "
         f"safety={ms(s['safety']):.1f}ms"
     )
+
+def append_profiling_row(local_batch_size: int) -> None:
+    """Append one line of profiling data for this node to its CSV."""
+    stats = get_throughput_stats()
+    stage_stats = stats["stage_profiling"]
+
+    file_exists = os.path.exists(PROFILING_CSV)
+
+    with open(PROFILING_CSV, "a") as f:
+        # Write header once
+        if not file_exists:
+            f.write(
+                "node,batch_size,total_completed,elapsed_seconds,"
+                "throughput_rps,memory_mb,gpu_memory_mb,"
+                "embed,ann,docfetch,rerank,generate,sentiment,safety\n"
+            )
+
+        f.write(
+            f"{NODE_NUMBER},"
+            f"{local_batch_size},"
+            f"{stats['total_completed']},"
+            f"{stats['elapsed_seconds']},"
+            f"{stats['throughput_rps']},"
+            f"{stats['memory_mb']},"
+            f"{stats['gpu_memory_mb']},"
+            f"{stage_stats['embed']},"
+            f"{stage_stats['ann']},"
+            f"{stage_stats['docfetch']},"
+            f"{stage_stats['rerank']},"
+            f"{stage_stats['generate']},"
+            f"{stage_stats['sentiment']},"
+            f"{stage_stats['safety']}\n"
+        )
 
 @dataclass
 class PipelineRequest:
@@ -427,6 +462,8 @@ class Node0Pipeline(BasePipeline):
         except: pass # Async fire and forget
 
         log_stage_profile("Node 0")
+        append_profiling_row(batch_size)
+
 
 class Node1Pipeline(BasePipeline):
     def __init__(self):
@@ -499,7 +536,9 @@ class Node1Pipeline(BasePipeline):
             self.session.post(f"http://{NODE_2_IP_PORT}/query", data=data, headers=headers, timeout=1.0)
         except: pass
 
-        log_stage_profile("Node1")
+        log_stage_profile("Node 1")
+        append_profiling_row(batch_size)
+
 
     def process_batch(self, reqs): pass
 
@@ -558,7 +597,9 @@ class Node2Pipeline(BasePipeline):
             self.session.post(f"http://{NODE_0_IP_PORT}/return", json=data, timeout=5.0)
         except: pass
 
-        log_stage_profile("Node2")
+        log_stage_profile("Node 2")
+        append_profiling_row(batch_size)
+
 
     def process_batch(self, reqs): pass
 
